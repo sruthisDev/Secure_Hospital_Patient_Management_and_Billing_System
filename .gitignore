@@ -2,3 +2,4 @@
 __pycache__/
 .encryption_iv
 .encryption_key
+.venv/

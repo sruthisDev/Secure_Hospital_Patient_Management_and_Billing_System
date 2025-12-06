@@ -1,59 +1,25 @@
 import os
 import mysql.connector
 from mysql.connector import errorcode
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives import padding
-from cryptography.hazmat.backends import default_backend
+from crypto_utils import encrypt_value, decrypt_value
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Load or generate encryption key and IV
-# Keep key consistent across app restarts by saving to file
-KEY_FILE = ".encryption_key"
-IV_FILE = ".encryption_iv"
 
-if os.path.exists(KEY_FILE) and os.path.exists(IV_FILE):
-    # Load existing key and IV
-    with open(KEY_FILE, 'rb') as f:
-        key = f.read()
-    with open(IV_FILE, 'rb') as f:
-        iv = f.read()
-else:
-    # Generate new key and IV, save for future use
-    key = os.urandom(32)  # AES 256-bit key
-    iv = os.urandom(16)   # 128-bit IV
-    with open(KEY_FILE, 'wb') as f:
-        f.write(key)
-    with open(IV_FILE, 'wb') as f:
-        f.write(iv)
+def encrypt_data(plain_text: str) -> str:
+    """Encrypt sensitive values with AES-256-GCM (base64 payload)."""
+    return encrypt_value(plain_text or "")
 
-def encrypt_data(plain_text):
-    """Encrypt data using AES-256-CBC"""
-    # Apply padding to ensure the data is a multiple of the AES block size (128 bits)
-    padder = padding.PKCS7(128).padder()
-    padded_data = padder.update(plain_text.encode()) + padder.finalize()
-    
-    # Encrypt the data
-    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
-    encryptor = cipher.encryptor()
-    encrypted_data = encryptor.update(padded_data) + encryptor.finalize()
-    
-    return encrypted_data
 
-def decrypt_data(encrypted_data):
-    """Decrypt AES-256-CBC encrypted data"""
-    # Decrypt the data
-    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
-    decryptor = cipher.decryptor()
-    decrypted_data = decryptor.update(encrypted_data) + decryptor.finalize()
-    
-    # Remove padding
-    unpadder = padding.PKCS7(128).unpadder()
-    plain_data = unpadder.update(decrypted_data) + unpadder.finalize()
-    
-    return plain_data.decode()
+def decrypt_data(encrypted_data) -> str:
+    """Decrypt AES-256-GCM payload pulled from the database."""
+    if encrypted_data in (None, b"", ""):
+        return ""
+    if isinstance(encrypted_data, bytes):
+        encrypted_data = encrypted_data.decode("utf-8")
+    return decrypt_value(encrypted_data)
 
 def connect_to_db():
     """Connect to the MySQL database"""
@@ -136,7 +102,12 @@ def create_database_and_tables():
     """)
     
     def safe_create_index(sql_stmt):
-        cursor.execute(sql_stmt)
+        try:
+            cursor.execute(sql_stmt)
+        except mysql.connector.Error as exc:
+            if exc.errno == errorcode.ER_DUP_KEYNAME:
+                return
+            raise
 
     # Create the Billing table
     cursor.execute("""
@@ -154,6 +125,21 @@ def create_database_and_tables():
     """)
     safe_create_index("CREATE INDEX idx_billing_patient ON Billing(patient_id);")
     safe_create_index("CREATE INDEX idx_billing_status ON Billing(status);")
+
+    # Store individual payments linked to billing
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS Payment (
+        payment_id INT AUTO_INCREMENT PRIMARY KEY,
+        billing_id INT NOT NULL,
+        payment_amount DECIMAL(10, 2) NOT NULL,
+        payment_date DATETIME,
+        payment_method BLOB,
+        transaction_id BLOB,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (billing_id) REFERENCES Billing(billing_id)
+    );
+    """)
+    safe_create_index("CREATE INDEX idx_payment_billing ON Payment(billing_id);")
     
     # Create the Payment_Methods table (store encrypted method data)
     cursor.execute("""
@@ -191,6 +177,22 @@ def create_database_and_tables():
     """)
     safe_create_index("CREATE INDEX idx_payment_tx_billing ON Payment_Transactions(billing_id);")
     safe_create_index("CREATE INDEX idx_payment_tx_patient ON Payment_Transactions(patient_id);")
+
+    # Create table for additional sensitive identifiers (address, MRN, insurance)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS Patient_Sensitive (
+        sensitive_id INT AUTO_INCREMENT PRIMARY KEY,
+        patient_id INT NOT NULL,
+        mrn BLOB NOT NULL,                    -- Encrypted MRN
+        home_address BLOB,                    -- Encrypted address
+        insurance_policy BLOB,                -- Encrypted insurance policy number
+        card_last4 VARCHAR(12),               -- Last 4-6 digits only (no full PAN storage)
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (patient_id) REFERENCES Patient(patient_id) ON DELETE CASCADE
+    );
+    """)
+    safe_create_index("CREATE INDEX idx_sensitive_patient ON Patient_Sensitive(patient_id);")
     
     # Audit log table
     cursor.execute("""
@@ -223,6 +225,23 @@ def create_database_and_tables():
                 'SYSTEM',
                 CONCAT('{\"first_name\":\"', OLD.first_name, '\",\"last_name\":\"', OLD.last_name, '\",\"dob\":\"', OLD.dob, '\",\"gender\":\"', OLD.gender, '\"}'),
                 CONCAT('{\"first_name\":\"', NEW.first_name, '\",\"last_name\":\"', NEW.last_name, '\",\"dob\":\"', NEW.dob, '\",\"gender\":\"', NEW.gender, '\"}')
+            );
+        END;
+        """),
+        # Patient sensitive updates
+        ("DROP TRIGGER IF EXISTS trg_patient_sensitive_before_update;", """
+        CREATE TRIGGER trg_patient_sensitive_before_update
+        BEFORE UPDATE ON Patient_Sensitive
+        FOR EACH ROW
+        BEGIN
+            INSERT INTO Audit_Log (table_name, record_id, action, changed_by, old_data, new_data)
+            VALUES (
+                'Patient_Sensitive',
+                OLD.sensitive_id,
+                'UPDATE',
+                'SYSTEM',
+                CONCAT('{\"card_last4\":\"', OLD.card_last4, '\"}'),
+                CONCAT('{\"card_last4\":\"', NEW.card_last4, '\"}')
             );
         END;
         """),
@@ -432,4 +451,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

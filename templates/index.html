@@ -3,44 +3,74 @@
 {% block title %}Secure Hospital Management System{% endblock %}
 
 {% block content %}
-<h1>🏥 Secure Hospital Management System</h1>
-<p class="subtitle">Patient Management & Billing System</p>
+<section class="hero">
+    <div class="hero-left stagger">
+        <p class="pill">AES-256-GCM · CSRF-protected · TLS-ready</p>
+        <h1>Patient & Billing, encrypted by default.</h1>
+        <p class="subtitle">Onboard patients, capture medical records, book visits, and bill—without leaking sensitive data. Every field is encrypted and audit-logged.</p>
+        <div class="hero-actions" style="display:flex; gap:12px; flex-wrap:wrap;">
+            <a href="/patient" class="btn tilt">Start with Patient Intake</a>
+            <a href="{{ url_for('login') }}" class="ghost-btn tilt">Access Portal</a>
+        </div>
+        <div class="badge-row">
+            <span class="pill">Tamper triggers on updates</span>
+            <span class="pill">PII encrypted at rest</span>
+            <span class="pill">Session hardening</span>
+        </div>
+        <div class="badge-row" style="margin-top:10px;">
+            <span class="pill">CSP & HSTS ready</span>
+            <span class="pill">Rotating audit log</span>
+            <span class="pill">TLS toggle</span>
+        </div>
+    </div>
+    <div class="hero-right menu-card tilt stagger" style="min-width:280px; max-width:360px;">
+        <div class="icon">🛡️</div>
+        <h3>Security Snapshot</h3>
+        <p>Encrypted fields: contact, identifiers, card data, MRN, insurance.</p>
+        <ul style="list-style:none; padding:0; margin:14px 0 0; display:grid; gap:8px;">
+            <li class="pill" style="display:flex; justify-content:space-between;"><span>Data at rest</span><strong>AES-256-GCM</strong></li>
+            <li class="pill" style="display:flex; justify-content:space-between;"><span>Transport</span><strong>TLS ready</strong></li>
+            <li class="pill" style="display:flex; justify-content:space-between;"><span>Audit</span><strong>Triggers on updates</strong></li>
+            <li class="pill" style="display:flex; justify-content:space-between;"><span>Headers</span><strong>CSP / HSTS</strong></li>
+        </ul>
+    </div>
+</section>
 
 <div class="menu-grid">
-    <a href="/patient" class="menu-card">
+    <a href="/patient" class="menu-card tilt stagger">
         <div class="icon">👤</div>
         <h3>Patient Registration</h3>
-        <p>Register new patients</p>
+        <p>Intake with encryption, masking, and validation.</p>
     </a>
     
-    <a href="/staff" class="menu-card {% if not is_logged_in %}disabled{% endif %}">
+    <a href="/staff" class="menu-card tilt stagger {% if not is_logged_in %}disabled{% endif %}">
         <div class="icon">👨‍⚕️</div>
         <h3>Staff Registration</h3>
-        <p>Add staff members</p>
+        <p>Create verified care-team profiles.</p>
     </a>
     
-    <a href="/appointment" class="menu-card {% if not is_logged_in %}disabled{% endif %}">
+    <a href="/appointment" class="menu-card tilt stagger {% if not is_logged_in %}disabled{% endif %}">
         <div class="icon">📅</div>
         <h3>Book Appointment</h3>
-        <p>Schedule appointments</p>
+        <p>Coordinate visits with status tracking.</p>
     </a>
     
-    <a href="/medical-record" class="menu-card {% if not is_logged_in %}disabled{% endif %}">
+    <a href="/medical-record" class="menu-card tilt stagger {% if not is_logged_in %}disabled{% endif %}">
         <div class="icon">📋</div>
         <h3>Medical Record</h3>
-        <p>Add medical records</p>
+        <p>Capture diagnosis & plans encrypted end-to-end.</p>
     </a>
     
-    <a href="/billing" class="menu-card {% if not is_logged_in %}disabled{% endif %}">
+    <a href="/billing" class="menu-card tilt stagger {% if not is_logged_in %}disabled{% endif %}">
         <div class="icon">💰</div>
         <h3>Billing</h3>
-        <p>Create billing records</p>
+        <p>Generate charges with audit-ready metadata.</p>
     </a>
     
-    <a href="/payment" class="menu-card {% if not is_logged_in %}disabled{% endif %}">
+    <a href="/payment" class="menu-card tilt stagger {% if not is_logged_in %}disabled{% endif %}">
         <div class="icon">💳</div>
         <h3>Payment</h3>
-        <p>Process payments</p>
+        <p>Process payments with masked references.</p>
     </a>
 </div>
 {% endblock %}

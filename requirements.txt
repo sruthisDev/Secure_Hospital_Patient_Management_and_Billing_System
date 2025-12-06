@@ -1,4 +1,4 @@
 flask
 mysql-connector-python
-pycryptodome
 cryptography
+python-dotenv
