@@ -336,6 +336,15 @@
                     {% endif %}
                 </div>
             </header>
+            {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+            <div style="margin-bottom:16px; display:grid; gap:10px;">
+                {% for category, msg in messages %}
+                <div class="alert {% if category == 'error' %}error{% endif %}">{{ msg }}</div>
+                {% endfor %}
+            </div>
+            {% endif %}
+            {% endwith %}
             {% block content %}{% endblock %}
         </div>
     </div>

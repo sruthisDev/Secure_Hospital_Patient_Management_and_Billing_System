@@ -209,23 +209,27 @@ def patient_form():
 
             # Basic server-side validation
             if len(full_name) < 2 or not dob or not EMAIL_REGEX.match(email) or len(mrn) < 3:
-                return render_template("patient_form.html", error="Please provide valid required fields."), 400
+                flash("Please provide valid required fields.", "error")
+                return render_template("patient_form.html"), 400
             sanitized_phone = re.sub(r"\D", "", phone)
             if phone and len(sanitized_phone) < 7:
-                return render_template("patient_form.html", error="Phone number must be at least 7 digits."), 400
+                flash("Phone number must be at least 7 digits.", "error")
+                return render_template("patient_form.html"), 400
             phone = sanitized_phone
 
             try:
                 card_number = sanitize_card_number(card)
             except ValueError as ve:
-                return render_template("patient_form.html", error=str(ve)), 400
+                flash(str(ve), "error")
+                return render_template("patient_form.html"), 400
 
             try:
                 amount_value = Decimal(amount).quantize(Decimal("0.01"))
                 if amount_value < 0:
                     raise InvalidOperation
             except (InvalidOperation, ValueError):
-                return render_template("patient_form.html", error="Billing amount must be a positive number."), 400
+                flash("Billing amount must be a positive number.", "error")
+                return render_template("patient_form.html"), 400
 
             # Split full_name into first_name and last_name
             name_parts = full_name.split(maxsplit=1)
@@ -305,7 +309,8 @@ def patient_form():
             print("ERROR IN POST /patient:", repr(e))
             if conn:
                 conn.rollback()
-            return render_template("patient_form.html", error="Error while saving to DB."), 500
+            flash("Error while saving to DB.", "error")
+            return render_template("patient_form.html"), 500
         finally:
             if cur:
                 cur.close()
@@ -422,9 +427,11 @@ def staff_form():
             email = request.form.get("email", "").strip()
             phone_number = request.form.get("phone_number", "").strip()
             if not EMAIL_REGEX.match(email):
-                return render_template("form.html", error="Enter a valid email address.", **template_kwargs), 400
+                flash("Enter a valid email address.", "error")
+                return render_template("form.html", **template_kwargs), 400
             if len(re.sub(r"\D", "", phone_number)) < 7:
-                return render_template("form.html", error="Phone number must be at least 7 digits.", **template_kwargs), 400
+                flash("Phone number must be at least 7 digits.", "error")
+                return render_template("form.html", **template_kwargs), 400
 
             conn = get_db_conn()
             cur = conn.cursor()
@@ -444,7 +451,8 @@ def staff_form():
             if conn:
                 conn.rollback()
             print("Staff registration error:", repr(e))
-            return "Unable to save staff record.", 500
+            flash("Unable to save staff record.", "error")
+            return render_template("form.html", **template_kwargs), 500
         finally:
             if cur:
                 cur.close()
@@ -456,25 +464,94 @@ def staff_form():
 
 @app.route("/appointment", methods=["GET", "POST"])
 def appointment_form():
+    form_fields = [
+        {'name': 'patient_id', 'label': 'Patient ID', 'type': 'text', 'required': True, 'placeholder': 'Enter Patient ID'},
+        {'name': 'doctor_id', 'label': 'Doctor ID', 'type': 'text', 'required': False, 'placeholder': 'Enter Staff/Doctor ID (optional)'},
+        {'name': 'appointment_date', 'label': 'Appointment Date & Time', 'type': 'datetime-local', 'required': True},
+        {'name': 'status', 'label': 'Status', 'type': 'select', 'required': False,
+         'options': [
+             {'value': 'Scheduled', 'label': 'Scheduled', 'selected': True},
+             {'value': 'Confirmed', 'label': 'Confirmed'},
+             {'value': 'Cancelled', 'label': 'Cancelled'},
+             {'value': 'Completed', 'label': 'Completed'}
+         ]}
+    ]
+
     if request.method == "POST":
         conn = cur = None
         try:
+            patient_id_raw = request.form.get("patient_id", "").strip()
+            doctor_id_raw = request.form.get("doctor_id", "").strip()
+            appt_date = request.form.get("appointment_date")
+            status = request.form.get("status", "Scheduled")
+
+            if not patient_id_raw or not appt_date:
+                flash("Patient ID and appointment date are required.", "error")
+                return render_template("form.html",
+                                       form_title="Book Appointment",
+                                       form_subtitle="Schedule a new appointment",
+                                       form_action="/appointment",
+                                       submit_button_text="Book Appointment",
+                                       form_fields=form_fields), 400
+
+            try:
+                patient_id_val = int(patient_id_raw)
+            except ValueError:
+                flash("Patient ID must be a number.", "error")
+                return render_template("form.html",
+                                       form_title="Book Appointment",
+                                       form_subtitle="Schedule a new appointment",
+                                       form_action="/appointment",
+                                       submit_button_text="Book Appointment",
+                                       form_fields=form_fields), 400
+
+            doctor_id_val = None
+            if doctor_id_raw:
+                try:
+                    doctor_id_val = int(doctor_id_raw)
+                except ValueError:
+                    flash("Doctor ID must be a number.", "error")
+                    return render_template("form.html",
+                                           form_title="Book Appointment",
+                                           form_subtitle="Schedule a new appointment",
+                                           form_action="/appointment",
+                                           submit_button_text="Book Appointment",
+                                           form_fields=form_fields), 400
+
             conn = get_db_conn()
             cur = conn.cursor()
 
+            # Validate patient exists
+            cur.execute("SELECT patient_id FROM Patient WHERE patient_id=%s", (patient_id_val,))
+            if not cur.fetchone():
+                flash("Patient ID not found. Please register the patient first.", "error")
+                return render_template("form.html",
+                                       form_title="Book Appointment",
+                                       form_subtitle="Schedule a new appointment",
+                                       form_action="/appointment",
+                                       submit_button_text="Book Appointment",
+                                       form_fields=form_fields), 400
+
+            # Insert appointment
             cur.execute(
                 """INSERT INTO Appointment (patient_id, doctor_id, appointment_date, status)
                    VALUES (%s, %s, %s, %s)""",
-                (request.form.get("patient_id"), request.form.get("doctor_id"),
-                 request.form.get("appointment_date"), request.form.get("status", "Scheduled"))
+                (patient_id_val, doctor_id_val, appt_date, status)
             )
             conn.commit()
+            flash("Appointment booked successfully!", "success")
             return redirect(url_for("success", message="Appointment booked successfully!"))
         except Exception as e:
             if conn:
                 conn.rollback()
             print("Appointment creation error:", repr(e))
-            return "Unable to create appointment.", 500
+            flash("Unable to create appointment. Please check IDs and try again.", "error")
+            return render_template("form.html",
+                                   form_title="Book Appointment",
+                                   form_subtitle="Schedule a new appointment",
+                                   form_action="/appointment",
+                                   submit_button_text="Book Appointment",
+                                   form_fields=form_fields), 500
         finally:
             if cur:
                 cur.close()
@@ -486,18 +563,7 @@ def appointment_form():
         form_subtitle="Schedule a new appointment",
         form_action="/appointment",
         submit_button_text="Book Appointment",
-        form_fields=[
-            {'name': 'patient_id', 'label': 'Patient ID', 'type': 'text', 'required': True, 'placeholder': 'Enter Patient ID'},
-            {'name': 'doctor_id', 'label': 'Doctor ID', 'type': 'text', 'required': True, 'placeholder': 'Enter Staff/Doctor ID'},
-            {'name': 'appointment_date', 'label': 'Appointment Date & Time', 'type': 'datetime-local', 'required': True},
-            {'name': 'status', 'label': 'Status', 'type': 'select', 'required': False,
-             'options': [
-                 {'value': 'Scheduled', 'label': 'Scheduled', 'selected': True},
-                 {'value': 'Confirmed', 'label': 'Confirmed'},
-                 {'value': 'Cancelled', 'label': 'Cancelled'},
-                 {'value': 'Completed', 'label': 'Completed'}
-             ]}
-        ])
+        form_fields=form_fields)
 
 
 @app.route("/medical-record", methods=["GET", "POST"])
@@ -523,7 +589,18 @@ def medical_record_form():
             if conn:
                 conn.rollback()
             print("Medical record error:", repr(e))
-            return "Unable to save medical record.", 500
+            flash("Unable to save medical record. Check IDs and try again.", "error")
+            return render_template("form.html",
+                form_title="Medical Record",
+                form_subtitle="Add a new medical record",
+                form_action="/medical-record",
+                submit_button_text="Save Medical Record",
+                form_fields=[
+                    {'name': 'patient_id', 'label': 'Patient ID', 'type': 'text', 'required': True, 'placeholder': 'Enter Patient ID'},
+                    {'name': 'doctor_id', 'label': 'Doctor ID', 'type': 'text', 'required': True, 'placeholder': 'Enter Staff/Doctor ID'},
+                    {'name': 'diagnosis', 'label': 'Diagnosis', 'type': 'textarea', 'required': True, 'placeholder': 'Enter diagnosis details'},
+                    {'name': 'treatment_plan', 'label': 'Treatment Plan', 'type': 'textarea', 'required': True, 'placeholder': 'Enter treatment plan details'}
+                ]), 500
         finally:
             if cur:
                 cur.close()
@@ -563,7 +640,24 @@ def billing_form():
             if conn:
                 conn.rollback()
             print("Billing creation error:", repr(e))
-            return "Unable to save billing record.", 500
+            flash("Unable to save billing record. Check patient ID and amounts.", "error")
+            return render_template("form.html",
+                form_title="Billing",
+                form_subtitle="Create a new billing record",
+                form_action="/billing",
+                submit_button_text="Create Billing Record",
+                form_fields=[
+                    {'name': 'patient_id', 'label': 'Patient ID', 'type': 'text', 'required': True, 'placeholder': 'Enter Patient ID'},
+                    {'name': 'total_amount', 'label': 'Total Amount ($)', 'type': 'number', 'required': True, 'step': '0.01', 'min': '0', 'placeholder': '0.00'},
+                    {'name': 'status', 'label': 'Status', 'type': 'select', 'required': False,
+                     'options': [
+                         {'value': 'Pending', 'label': 'Pending', 'selected': True},
+                         {'value': 'Paid', 'label': 'Paid'},
+                         {'value': 'Overdue', 'label': 'Overdue'},
+                         {'value': 'Cancelled', 'label': 'Cancelled'}
+                     ]},
+                    {'name': 'payment_due_date', 'label': 'Payment Due Date', 'type': 'datetime-local', 'required': False}
+                ]), 500
         finally:
             if cur:
                 cur.close()
@@ -612,7 +706,19 @@ def payment_form():
             if conn:
                 conn.rollback()
             print("Payment processing error:", repr(e))
-            return "Unable to process payment.", 500
+            flash("Unable to process payment. Check billing ID and amounts.", "error")
+            return render_template("form.html",
+                form_title="Payment Processing",
+                form_subtitle="Process a payment for a billing record",
+                form_action="/payment",
+                submit_button_text="Process Payment",
+                form_fields=[
+                    {'name': 'billing_id', 'label': 'Billing ID', 'type': 'text', 'required': True, 'placeholder': 'Enter Billing ID'},
+                    {'name': 'payment_amount', 'label': 'Payment Amount ($)', 'type': 'number', 'required': True, 'step': '0.01', 'min': '0', 'placeholder': '0.00'},
+                    {'name': 'payment_date', 'label': 'Payment Date', 'type': 'datetime-local', 'required': True},
+                    {'name': 'payment_method', 'label': 'Payment Method', 'type': 'text', 'required': True, 'placeholder': 'e.g., Credit Card, Debit Card, Cash'},
+                    {'name': 'transaction_id', 'label': 'Transaction ID', 'type': 'text', 'required': True, 'placeholder': 'Enter transaction ID'}
+                ]), 500
         finally:
             if cur:
                 cur.close()
