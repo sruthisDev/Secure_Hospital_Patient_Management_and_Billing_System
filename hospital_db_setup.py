@@ -3,6 +3,7 @@ import mysql.connector
 from mysql.connector import errorcode
 from crypto_utils import encrypt_value, decrypt_value
 from dotenv import load_dotenv
+from werkzeug.security import generate_password_hash
 
 # Load environment variables from .env file
 load_dotenv()
@@ -37,6 +38,23 @@ def create_database_and_tables():
     # Create the hospital database if it does not exist
     cursor.execute("CREATE DATABASE IF NOT EXISTS secure_hospital_db;")
     cursor.execute("USE secure_hospital_db;")
+    
+    # Create the Users table for authentication (must be first)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS Users (
+        user_id INT AUTO_INCREMENT PRIMARY KEY,
+        email VARCHAR(255) NOT NULL UNIQUE,
+        password_hash VARCHAR(255) NOT NULL,
+        role ENUM('patient', 'staff', 'admin') NOT NULL,
+        reference_id INT,                 -- Links to patient_id or staff_id based on role
+        is_active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_email (email),
+        INDEX idx_role (role),
+        INDEX idx_reference (role, reference_id)
+    );
+    """)
     
     # Create the Staff table first (no dependencies)
     cursor.execute("""
@@ -293,6 +311,55 @@ def create_database_and_tables():
     
     print("Database and tables created successfully!")
 
+
+def create_initial_users():
+    """Create initial user accounts for admin, staff, and patient"""
+    db_connection = connect_to_db()
+    db_connection.database = "secure_hospital_db"
+    cursor = db_connection.cursor()
+    
+    try:
+        # Check if users already exist
+        cursor.execute("SELECT COUNT(*) as count FROM Users")
+        existing_count = cursor.fetchone()[0]
+        
+        if existing_count > 0:
+            print(f"Users table already has {existing_count} users. Skipping initial user creation.")
+            return
+        
+        # Create initial admin user (no reference_id needed for admin)
+        admin_password_hash = generate_password_hash('default')
+        cursor.execute("""
+            INSERT INTO Users (email, password_hash, role, reference_id, is_active)
+            VALUES (%s, %s, %s, %s, %s)
+        """, ('root@gmail.com', admin_password_hash, 'admin', None, True))
+        
+        # Create initial staff user (will need to link to staff_id later)
+        staff_password_hash = generate_password_hash('staff123')
+        cursor.execute("""
+            INSERT INTO Users (email, password_hash, role, reference_id, is_active)
+            VALUES (%s, %s, %s, %s, %s)
+        """, ('staff@hospital.com', staff_password_hash, 'staff', None, True))
+        
+        # Create initial patient user (will need to link to patient_id later)
+        patient_password_hash = generate_password_hash('patient123')
+        cursor.execute("""
+            INSERT INTO Users (email, password_hash, role, reference_id, is_active)
+            VALUES (%s, %s, %s, %s, %s)
+        """, ('patient@hospital.com', patient_password_hash, 'patient', None, True))
+        
+        db_connection.commit()
+        print("Initial users created successfully!")
+        print("  Admin: root@gmail.com / default")
+        print("  Staff: staff@hospital.com / staff123")
+        print("  Patient: patient@hospital.com / patient123")
+    except Exception as e:
+        print(f"Error creating initial users: {e}")
+        db_connection.rollback()
+    finally:
+        cursor.close()
+        db_connection.close()
+
 def insert_patient_data(db_connection, patient_data):
     """Insert patient data into the database after encrypting sensitive fields"""
     cursor = db_connection.cursor()
@@ -396,7 +463,10 @@ def main():
     # Step 1: Create Database and Tables
     create_database_and_tables()
     
-    # Step 2: Connect to the database
+    # Step 2: Create initial users
+    create_initial_users()
+    
+    # Step 3: Connect to the database
     db_connection = connect_to_db()
     db_connection.database = "secure_hospital_db"
     

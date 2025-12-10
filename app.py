@@ -5,6 +5,7 @@ import secrets
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from logging.handlers import RotatingFileHandler
+from werkzeug.security import generate_password_hash, check_password_hash
 
 from flask import Flask, render_template, request, redirect, url_for, session, abort, flash
 
@@ -192,28 +193,6 @@ def dashboard():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    # Hardcoded credentials for different roles
-    CREDENTIALS = {
-        'admin': {
-            'email': 'root@gmail.com',
-            'password': 'default',
-            'role': 'admin',
-            'name': 'Administrator'
-        },
-        'staff': {
-            'email': 'staff@hospital.com',
-            'password': 'staff123',
-            'role': 'staff',
-            'name': 'Staff Member'
-        },
-        'patient': {
-            'email': 'patient@hospital.com',
-            'password': 'patient123',
-            'role': 'patient',
-            'name': 'Patient'
-        }
-    }
-    
     if request.method == "POST":
         email = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
@@ -221,54 +200,69 @@ def login():
         if not EMAIL_REGEX.match(email):
             return render_template("login.html", error="Enter a valid email address.")
         
-        # Check credentials against all roles
-        for role_key, creds in CREDENTIALS.items():
-            if email == creds['email'].lower() and password == creds['password']:
-                session['logged_in'] = True
-                session['user_role'] = creds['role']
-                session['user_name'] = creds['name']
-                # For patients, we need to get their actual patient_id from database
-                # For now, set a default user_id (in real app, would look up from DB)
-                if creds['role'] == 'patient':
-                    # Try to find patient by email in database
-                    conn = cur = None
-                    try:
-                        conn = get_db_conn()
-                        cur = conn.cursor()
-                        cur.execute("SELECT patient_id, email FROM Patient")
-                        patients = cur.fetchall()
-                        patient_id = None
-                        for p in patients:
-                            if p[1]:  # if email exists
-                                try:
-                                    decrypted_email = decrypt_data(p[1]).strip().lower()
-                                    if decrypted_email == email:
-                                        patient_id = p[0]
-                                        break
-                                except:
-                                    continue
-                        if patient_id:
-                            session['user_id'] = patient_id
-                            session['patient_id'] = patient_id
-                        else:
-                            # Default patient ID for demo
-                            session['user_id'] = 1
-                            session['patient_id'] = 1
-                    except Exception as e:
-                        print(f"Error looking up patient: {e}")
-                        session['user_id'] = 1
-                        session['patient_id'] = 1
-                    finally:
-                        if cur:
-                            cur.close()
-                        if conn:
-                            conn.close()
-                else:
-                    session['user_id'] = 1  # Default for staff/admin
-                flash(f"Welcome! You have successfully logged in as {creds['name']}.", "success")
-                return redirect(url_for("dashboard"))
+        if not password:
+            return render_template("login.html", error="Password is required.")
         
-        return render_template("login.html", error="Invalid email or password.")
+        # Check credentials against Users table
+        conn = cur = None
+        try:
+            conn = get_db_conn()
+            cur = conn.cursor(dictionary=True)
+            
+            # Look up user by email
+            cur.execute("""
+                SELECT user_id, email, password_hash, role, reference_id, is_active
+                FROM Users
+                WHERE email = %s AND is_active = TRUE
+            """, (email,))
+            
+            user = cur.fetchone()
+            
+            if user and check_password_hash(user['password_hash'], password):
+                # Valid credentials
+                session['logged_in'] = True
+                session['user_role'] = user['role']
+                session['user_id'] = user['user_id']
+                
+                # Get user name and set reference_id based on role
+                if user['role'] == 'patient':
+                    session['patient_id'] = user['reference_id']
+                    # Get patient name
+                    if user['reference_id']:
+                        cur.execute("SELECT first_name, last_name FROM Patient WHERE patient_id = %s", (user['reference_id'],))
+                        patient = cur.fetchone()
+                        if patient:
+                            session['user_name'] = f"{patient['first_name']} {patient['last_name']}"
+                        else:
+                            session['user_name'] = "Patient"
+                    else:
+                        session['user_name'] = "Patient"
+                elif user['role'] in ['staff', 'admin']:
+                    # Get staff name if reference_id exists
+                    if user['reference_id']:
+                        cur.execute("SELECT first_name, last_name FROM Staff WHERE staff_id = %s", (user['reference_id'],))
+                        staff = cur.fetchone()
+                        if staff:
+                            session['user_name'] = f"{staff['first_name']} {staff['last_name']}"
+                        else:
+                            session['user_name'] = "Staff" if user['role'] == 'staff' else "Administrator"
+                    else:
+                        session['user_name'] = "Staff" if user['role'] == 'staff' else "Administrator"
+                
+                flash(f"Welcome! You have successfully logged in.", "success")
+                return redirect(url_for("dashboard"))
+            else:
+                return render_template("login.html", error="Invalid email or password.")
+                
+        except Exception as e:
+            print(f"Login error: {e}")
+            app.logger.error(f"Login error: {str(e)}", exc_info=True)
+            return render_template("login.html", error="An error occurred during login. Please try again.")
+        finally:
+            if cur:
+                cur.close()
+            if conn:
+                conn.close()
     
     return render_template("login.html")
 
@@ -382,6 +376,22 @@ def patient_form():
                 (patient_id, encrypted_mrn, encrypted_address, encrypted_insurance, None),
             )
 
+            # 4) Create user account for the patient
+            # Generate a default password
+            # NOTE: No email service configured, so displaying temporary password on screen
+            # In production, this password should be sent via email instead of displaying it
+            default_password = secrets.token_urlsafe(8)  # Generate random password
+            password_hash = generate_password_hash(default_password)
+            
+            try:
+                cur.execute("""
+                    INSERT INTO Users (email, password_hash, role, reference_id, is_active)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (email.lower(), password_hash, 'patient', patient_id, True))
+            except Exception as user_error:
+                # If user already exists, that's okay (might be updating)
+                print(f"Note: User account creation: {user_error}")
+            
             conn.commit()
             
             # Only auto-login if registering as a patient (not when staff registers)
@@ -389,16 +399,23 @@ def patient_form():
             user_role = get_current_user_role()
             if user_role == 'patient' or not session.get('logged_in'):
                 # This is a self-registration, auto-login
-                session['logged_in'] = True
-                session['user_id'] = patient_id
-                session['user_role'] = 'patient'
-                session['patient_id'] = patient_id  # Backward compatibility
-                session['user_name'] = f"{first_name} {last_name}"
-                flash(f"Patient registered successfully! Patient ID: {patient_id}", "success")
-                return redirect(url_for("success"))
+                # Look up the user account we just created
+                cur.execute("SELECT user_id FROM Users WHERE email = %s AND role = 'patient'", (email.lower(),))
+                user_account = cur.fetchone()
+                if user_account:
+                    session['logged_in'] = True
+                    session['user_id'] = user_account[0]
+                    session['user_role'] = 'patient'
+                    session['patient_id'] = patient_id
+                    session['user_name'] = f"{first_name} {last_name}"
+                    flash(f"Patient registered successfully! Patient ID: {patient_id}. Your temporary password is: {default_password} (Note: Displaying password on screen is not secure, but no email/messaging service is implemented, so this is the alternative method.)", "success")
+                    return redirect(url_for("success"))
+                else:
+                    flash(f"Patient registered successfully! Patient ID: {patient_id}. Please contact admin for login credentials.", "success")
+                    return redirect(url_for("success"))
             else:
                 # Staff/admin registered a patient, don't auto-login
-                flash(f"Patient registered successfully! Patient ID: {patient_id}", "success")
+                flash(f"Patient registered successfully! Patient ID: {patient_id}. Default password: {default_password} (Note: Displaying password on screen is not secure, but no email/messaging service is implemented, so this is the alternative method.)", "success")
                 return redirect(url_for("list_patients"))
 
         except Exception as e:
@@ -565,8 +582,31 @@ def staff_form():
                 (request.form.get("first_name"), request.form.get("last_name"), 
                  request.form.get("role"), encrypted_email, encrypted_phone)
             )
+            staff_id = cur.lastrowid
+            
+            # Create user account for the staff member
+            # Generate a default password
+            # NOTE: No email service configured, so displaying temporary password on screen
+            # In production, this password should be sent via email instead of displaying it
+            default_password = secrets.token_urlsafe(8)  # Generate random password
+            password_hash = generate_password_hash(default_password)
+            
+            # Determine user role (staff or admin based on staff role)
+            staff_role = request.form.get("role", "").strip()
+            user_role = 'admin' if staff_role.lower() == 'administrator' else 'staff'
+            
+            try:
+                cur.execute("""
+                    INSERT INTO Users (email, password_hash, role, reference_id, is_active)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (email.lower(), password_hash, user_role, staff_id, True))
+            except Exception as user_error:
+                # If user already exists, that's okay
+                print(f"Note: User account creation: {user_error}")
+            
             conn.commit()
-            return redirect(url_for("success", message="Staff registered successfully!"))
+            flash(f"Staff registered successfully! Default password: {default_password} (Note: Displaying password on screen is not secure, but no email/messaging service is implemented, so this is the alternative method.)", "success")
+            return redirect(url_for("success"))
         except Exception as e:
             if conn:
                 conn.rollback()
