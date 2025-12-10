@@ -1421,6 +1421,9 @@ def success():
 
 
 if __name__ == "__main__":
+    # TLS/HTTPS Configuration:
+    # - SSL context enabled when REQUIRE_HTTPS=1
+    # - HTTPS enforcement and HSTS headers configured in enforce_security() and add_security_headers()
     ssl_ctx = "adhoc" if app.config["REQUIRE_HTTPS"] else None
     # Debug disabled by default to avoid leaking stack traces; enable via FLASK_ENV=development if needed.
     host = os.environ.get("APP_HOST", "127.0.0.1")
