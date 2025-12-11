@@ -257,7 +257,12 @@ app.jinja_env.filters["is_sensitive"] = is_sensitive_column
 def enforce_security():
     session.permanent = True
     if app.config["REQUIRE_HTTPS"] and not request.is_secure and request.headers.get("X-Forwarded-Proto", "http") != "https":
-        secure_url = request.url.replace("http://", "https://", 1)
+        # Build a safe same-host HTTPS URL to avoid open redirects
+        host = request.host
+        path = request.full_path if request.full_path else request.path
+        if path.endswith("?"):
+            path = path[:-1]
+        secure_url = f"https://{host}{path}"
         return redirect(secure_url, code=301)
     if request.method == "POST":
         require_csrf()
@@ -1452,15 +1457,59 @@ def admin_view_tables():
             ORDER BY TABLE_NAME
         """)
         all_tables = [row['TABLE_NAME'] for row in cur.fetchall()]
+
+        # Hard-allowlist tables and their safe queries to avoid dynamic SQL injection
+        allowed_table_queries = {
+            "Users": (
+                "SELECT COUNT(*) as count FROM Users",
+                "SELECT * FROM Users LIMIT %s OFFSET %s",
+            ),
+            "Staff": (
+                "SELECT COUNT(*) as count FROM Staff",
+                "SELECT * FROM Staff LIMIT %s OFFSET %s",
+            ),
+            "Patient": (
+                "SELECT COUNT(*) as count FROM Patient",
+                "SELECT * FROM Patient LIMIT %s OFFSET %s",
+            ),
+            "Patient_Sensitive": (
+                "SELECT COUNT(*) as count FROM Patient_Sensitive",
+                "SELECT * FROM Patient_Sensitive LIMIT %s OFFSET %s",
+            ),
+            "Appointment": (
+                "SELECT COUNT(*) as count FROM Appointment",
+                "SELECT * FROM Appointment LIMIT %s OFFSET %s",
+            ),
+            "Medical_Record": (
+                "SELECT COUNT(*) as count FROM Medical_Record",
+                "SELECT * FROM Medical_Record LIMIT %s OFFSET %s",
+            ),
+            "Billing": (
+                "SELECT COUNT(*) as count FROM Billing",
+                "SELECT * FROM Billing LIMIT %s OFFSET %s",
+            ),
+            "Payment_Methods": (
+                "SELECT COUNT(*) as count FROM Payment_Methods",
+                "SELECT * FROM Payment_Methods LIMIT %s OFFSET %s",
+            ),
+            "Payment_Transactions": (
+                "SELECT COUNT(*) as count FROM Payment_Transactions",
+                "SELECT * FROM Payment_Transactions LIMIT %s OFFSET %s",
+            ),
+            "Audit_Log": (
+                "SELECT COUNT(*) as count FROM Audit_Log",
+                "SELECT * FROM Audit_Log LIMIT %s OFFSET %s",
+            ),
+        }
         
         table_data = None
         total_rows = 0
         columns = []
         
         if table_name:
-            # Validate table name to prevent SQL injection
-            if table_name not in all_tables:
-                flash(f"Table '{table_name}' not found.", "error")
+            # Validate table name to prevent SQL injection and enforce allowlist
+            if table_name not in all_tables or table_name not in allowed_table_queries:
+                flash(f"Table '{table_name}' not found or not allowed.", "error")
                 return render_template("admin_tables.html", 
                                      tables=all_tables, 
                                      selected_table=None,
@@ -1478,13 +1527,15 @@ def admin_view_tables():
             """, (table_name,))
             columns = cur.fetchall()
             
-            # Get total row count
-            cur.execute(f"SELECT COUNT(*) as count FROM `{table_name}`")
+            # Get total row count using allowlisted query
+            sql_count = allowed_table_queries[table_name][0]
+            cur.execute(sql_count)
             total_rows = cur.fetchone()['count']
             total_pages = (total_rows + limit - 1) // limit
             
             # Get table data with pagination
-            cur.execute(f"SELECT * FROM `{table_name}` LIMIT %s OFFSET %s", (limit, offset))
+            sql_data = allowed_table_queries[table_name][1]
+            cur.execute(sql_data, (limit, offset))
             table_data = cur.fetchall()
             
             # Try to decrypt BLOB fields that might be encrypted
