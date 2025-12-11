@@ -257,13 +257,8 @@ app.jinja_env.filters["is_sensitive"] = is_sensitive_column
 def enforce_security():
     session.permanent = True
     if app.config["REQUIRE_HTTPS"] and not request.is_secure and request.headers.get("X-Forwarded-Proto", "http") != "https":
-        # Build a safe same-host HTTPS URL to avoid open redirects
-        host = request.host
-        path = request.full_path if request.full_path else request.path
-        if path.endswith("?"):
-            path = path[:-1]
-        secure_url = f"https://{host}{path}"
-        return redirect(secure_url, code=301)
+        # Enforce HTTPS by rejecting non-HTTPS requests to avoid any open-redirect risk
+        abort(403, description="HTTPS is required")
     if request.method == "POST":
         require_csrf()
 
