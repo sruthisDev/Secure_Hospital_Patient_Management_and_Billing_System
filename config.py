@@ -13,7 +13,9 @@ except ModuleNotFoundError:
 
 
 # Persisted key file keeps encryption stable across restarts if env var is not set.
-KEY_FILE = os.environ.get("PII_KEY_FILE", ".encryption_key")
+# Sanitize path to prevent traversal from env; keep within cwd using basename.
+_key_env = os.environ.get("PII_KEY_FILE", ".encryption_key")
+KEY_FILE = os.path.join(os.getcwd(), os.path.basename(_key_env))
 
 
 def get_db_conn():
